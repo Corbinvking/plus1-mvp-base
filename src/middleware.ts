@@ -11,23 +11,43 @@ export async function middleware(req: NextRequest) {
   // Skip middleware for public routes and static assets
   if (publicRoutes.includes(pathname) || 
       pathname.includes('/_next/') ||
-      pathname.includes('/api/')) {
+      pathname.includes('/api/') ||
+      pathname.includes('/course-thumbnails/')) {
     return NextResponse.next()
   }
 
   try {
     const res = NextResponse.next()
     const supabase = createMiddlewareClient({ req, res })
-    const { data: { session } } = await supabase.auth.getSession()
 
-    // If no session, redirect to login
-    if (!session) {
+    // Try to get session without making a new request if possible
+    const { data: { session }, error } = await supabase.auth.getSession()
+
+    // Handle rate limits gracefully - let the request through
+    if (error?.status === 429) {
+      console.warn('Rate limit hit, allowing request:', pathname)
+      return res
+    }
+
+    // If JWT is invalid but we have a refresh token, let the request through
+    // The client-side auth will handle refresh if needed
+    if (error?.message?.includes('JWT')) {
+      const refreshToken = req.cookies.get('sb-refresh-token')
+      if (refreshToken) {
+        console.warn('JWT expired but have refresh token, allowing request:', pathname)
+        return res
+      }
+    }
+
+    // Only redirect to login if we're sure there's no session
+    if (!session && !error) {
       return NextResponse.redirect(new URL('/login', req.url))
     }
 
     return res
   } catch (error) {
     console.error('Middleware error:', error)
+    // On error, let the request through - better than blocking navigation
     return NextResponse.next()
   }
 }
